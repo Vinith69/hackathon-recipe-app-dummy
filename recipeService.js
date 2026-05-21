@@ -69,102 +69,89 @@ export async function scanRawIngredients(imagePath) {
 }
 
 
-/**
- * STEP 2 (Upgraded): Fetches up to 20 compact recipes per page to populate a scrollable feed.
- */
-export async function generateRecipeFeed(confirmedIngredients, page = 1, cuisinePreference = 'Global') {
-    try {
-        const ingredientsJson = JSON.stringify(confirmedIngredients);
+import Recipe from './models/Recipe.js';
 
-        let cuisineInstruction = `Suggest recipes matching the cuisine theme: "${cuisinePreference}".`;
-        if (cuisinePreference.toLowerCase() === 'global') {
-            cuisineInstruction = `Provide a diverse mix of international cuisines (e.g., Italian, Mexican, Asian, Mediterranean, American).`;
+/**
+ * HIGH-SPEED DATABASE FEED ENGINE
+ * Queries MongoDB, performs array matching, and generates delivery deep links.
+ */
+export async function getPaginatedRecipeFeed(userIngredients, page = 1, cuisinePreference = 'Global') {
+    try {
+        const limit = 20;
+        const skip = (page - 1) * limit;
+
+        // Convert all user ingredient names to lowercase for robust matching
+        const userOwnedNames = userIngredients.map(item => item.name.toLowerCase().trim());
+
+        // 1. Build Database Query Matrix
+        let query = {};
+        if (cuisinePreference.toLowerCase() !== 'global') {
+            query.cuisine_style = { $regex: new RegExp(cuisinePreference, 'i') };
         }
 
-        const prompt = `
-      Available Ingredients: ${ingredientsJson}.
-      ${cuisineInstruction}
-      
-      This is request PAGE NUMBER: ${page}.
-      Generate a clean list of exactly 20 distinct recipe concepts that can be made using these ingredients. 
-      For each recipe, you are allowed to include 1 to 3 critical missing ingredients that the user will need to order.
-      Keep descriptions brief to avoid token overflow.
-    `;
+        // Fetch recipes matching the cuisine filter
+        const totalCount = await Recipe.countDocuments(query);
+        const databaseRecipes = await Recipe.find(query);
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        current_page: { type: Type.NUMBER },
-                        has_more_pages: { type: Type.BOOLEAN },
-                        recipes: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    id: { type: Type.STRING, description: 'A unique slug string, e.g., spicy-ribeye-curry' },
-                                    title: { type: Type.STRING },
-                                    cuisine_style: { type: Type.STRING },
-                                    brief_summary: { type: Type.STRING, description: 'One short sentence description.' },
-                                    missing_ingredients_to_order: {
-                                        type: Type.ARRAY,
-                                        items: { type: Type.STRING }
-                                    }
-                                },
-                                required: ['id', 'title', 'cuisine_style', 'brief_summary', 'missing_ingredients_to_order']
-                            }
-                        }
-                    },
-                    required: ['current_page', 'has_more_pages', 'recipes']
+        // 2. Mathematical Ingredient Cross-Examination
+        const calculatedFeed = databaseRecipes.map(recipe => {
+            const missingItems = [];
+            let matchedCount = 0;
+
+            // Compare what the user owns vs what the database requires
+            recipe.full_ingredients_list.forEach(reqItem => {
+                const cleanedName = reqItem.name.toLowerCase().trim();
+                if (userOwnedNames.includes(cleanedName)) {
+                    matchedCount++;
+                } else {
+                    // Format structural display text for the frontend checklist
+                    missingItems.push({
+                        name: reqItem.name,
+                        amount: reqItem.amount,
+                        unit: reqItem.unit,
+                        display_text: `${reqItem.amount} ${reqItem.unit} ${reqItem.name}`
+                    });
                 }
-            }
+            });
+
+            // 3. Blinkit Deep-Linking Search Parameterization
+            // Generates universal search query strings to load inside web views or intent routers
+            const blinkitSearchUrls = missingItems.map(item => {
+                const searchString = encodeURIComponent(`${item.name}`);
+                return {
+                    item_name: item.name,
+                    blinkit_url: `https://blinkit.com{searchString}`,
+                    swiggy_url: `https://swiggy.com{searchString}`
+                };
+            });
+
+            return {
+                id: recipe._id,
+                title: recipe.title,
+                cuisine_style: recipe.cuisine_style,
+                brief_summary: recipe.brief_summary,
+                missing_ingredients_to_order: missingItems,
+                delivery_links: blinkitSearchUrls,
+                match_percentage: Math.round((matchedCount / recipe.full_ingredients_list.length) * 100)
+            };
         });
 
-        const result = JSON.parse(response.text);
-        result.current_page = page;
-        return result;
+        // 4. Sort by best match percentage, then apply pagination slicing
+        const sortedFeed = calculatedFeed
+            .sort((a, b) => b.match_percentage - a.match_percentage)
+            .slice(skip, skip + limit);
+
+        return {
+            current_page: page,
+            has_more_pages: skip + limit < totalCount,
+            total_available: totalCount,
+            recipes: sortedFeed
+        };
 
     } catch (error) {
-        console.error('Feed Generation Error:', error.message || error);
+        console.error('Database Engine Splicing Error:', error);
         throw error;
     }
 }
 
-/**
- * STEP 2.5: Gets full detailed steps ONLY when a user selects a recipe from the feed.
- */
-export async function getRecipeDetails(recipeTitle, availableIngredients) {
-    try {
-        const prompt = `Generate comprehensive, step-by-step cooking instructions for the recipe "${recipeTitle}" using these available base ingredients: ${JSON.stringify(availableIngredients)}. Include details on incorporating any missing items.`;
-
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        title: { type: Type.STRING },
-                        prep_time: { type: Type.STRING },
-                        cooking_steps: {
-                            type: Type.ARRAY,
-                            items: { type: Type.STRING }
-                        }
-                    },
-                    required: ['title', 'prep_time', 'cooking_steps']
-                }
-            }
-        });
-
-        return JSON.parse(response.text);
-    } catch (error) {
-        console.error('Details Extraction Error:', error.message || error);
-        throw error;
-    }
-}
 
