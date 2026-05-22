@@ -39,13 +39,17 @@ export async function getPaginatedRecipeFeed(userIngredients, page = 1, cuisineP
             });
 
             const blinkitSearchUrls = missingItems.map(item => {
-                const searchString = encodeURIComponent(item.name);
+                // Encodes spaces and special characters cleanly (e.g. "boneless chicken" -> "boneless%20chicken")
+                const cleanSearchQuery = encodeURIComponent(item.name.toLowerCase().trim());
+
                 return {
                     item_name: item.name,
-                    blinkit_url: `https://blinkit.com{searchString}`,
-                    swiggy_url: `https://swiggy.com{searchString}`
+                    // Native Deep Links: Will prompt the phone to instantly launch the native mobile app if installed
+                    blinkit_url: `https://blinkit.com/s/?q=${cleanSearchQuery}`,
+                    swiggy_url: `https://www.swiggy.com/instamart/search?query=${cleanSearchQuery}`
                 };
             });
+
 
             return {
                 id: recipe._id,
@@ -134,7 +138,13 @@ async function startBackgroundGeneration(jobId, userIngredients, cuisinePreferen
                                             type: Type.ARRAY,
                                             items: {
                                                 type: Type.OBJECT,
-                                                properties: { name: { type: Type.STRING }, amount: { type: Type.NUMBER }, unit: { type: Type.STRING } },
+                                                properties: {
+                                                    name: { type: Type.STRING }, amount: { type: Type.NUMBER },
+                                                    unit: {
+                                                        type: Type.STRING,
+                                                        description: 'Strictly use metric abbreviations only: g, kg, ml, l, or pieces. Never use words like container, cup, or packet.'
+                                                    }
+                                                },
                                                 required: ['name', 'amount', 'unit']
                                             }
                                         },

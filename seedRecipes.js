@@ -54,7 +54,10 @@ async function seedDatabase() {
                                             properties: {
                                                 name: { type: Type.STRING },
                                                 amount: { type: Type.NUMBER },
-                                                unit: { type: Type.STRING }
+                                                unit: {
+                                                    type: Type.STRING,
+                                                    description: 'Strictly use metric abbreviations only: g, kg, ml, l, or pieces. Never use words like container, cup, or packet.'
+                                                }
                                             },
                                             required: ['name', 'amount', 'unit']
                                         }
