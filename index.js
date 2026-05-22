@@ -45,7 +45,7 @@ app.post('/api/scan-ingredients', upload.single('photo'), async (req, res) => {
                         mimeType: req.file.mimetype,
                     },
                 },
-                'Analyze this image and list every raw ingredient you see. Break down the quantity into a pure numerical amount and a standard unit (e.g. g, kg, ml, pieces, tbsp, tsp, bunch).',
+                'Analyze this image and list every raw ingredient you see. Break down the quantity into a pure numerical amount and Strictly use metric abbreviations only: g, kg, ml, l, or pieces. Never use words like container, cup, or packet.',
             ],
             config: {
                 responseMimeType: 'application/json',
@@ -59,10 +59,10 @@ app.post('/api/scan-ingredients', upload.single('photo'), async (req, res) => {
                                 properties: {
                                     name: { type: Type.STRING },
                                     amount: { type: Type.NUMBER, description: 'Numeric value only. Decimals allowed.' },
-                                    unit: { type: Type.STRING, description: 'e.g., g, kg, pieces, tbsp, tsp, cup, packet' },
-                                    raw_display_text: { type: Type.STRING, description: 'Combined text string, e.g., "500g", "2 pieces"' }
+                                    unit: { type: Type.STRING, description: 'Strictly use metric abbreviations only: g, kg, ml, l, or pieces. Never use words like container, cup, or packet.' },
+                                    display_text: { type: Type.STRING, description: 'Combined text string, e.g., "500g", "2 pieces"' }
                                 },
-                                required: ['name', 'amount', 'unit', 'raw_display_text']
+                                required: ['name', 'amount', 'unit', 'display_text']
                             }
                         }
                     },
