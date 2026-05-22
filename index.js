@@ -186,8 +186,8 @@ app.post('/api/recipes/status/:jobId', async (req, res) => {
                     const searchString = encodeURIComponent(item.name);
                     return {
                         item_name: item.name,
-                        blinkit_url: `https://blinkit.com{searchString}`,
-                        swiggy_url: `https://swiggy.com{searchString}`
+                        blinkit_url: `https://blinkit.com/s/?q=${searchString}`,
+                        swiggy_url: `https://www.swiggy.com/instamart/search?query=${searchString}`
                     };
                 });
 
