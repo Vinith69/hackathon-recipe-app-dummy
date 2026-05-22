@@ -1,110 +1,34 @@
-import 'dotenv/config';
-import { GoogleGenAI, Type } from '@google/genai';
-import fs from 'fs';
-
-const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY
-});
-
-/**
- * STEP 1: Scans an uploaded image and returns ingredients with separated amounts and units.
- */
-export async function scanRawIngredients(imagePath) {
-    try {
-        const fileBuffer = fs.readFileSync(imagePath);
-        const base64Image = fileBuffer.toString('base64');
-
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [
-                {
-                    inlineData: {
-                        data: base64Image,
-                        mimeType: 'image/jpeg',
-                    },
-                },
-                'Analyze this image and list every raw ingredient you see. Break down the quantity into a pure numerical amount and a standard unit (e.g. g, kg, ml, pieces, tbsp, tsp, bunch).',
-            ],
-            config: {
-                responseMimeType: 'application/json',
-                // Enforces a strict, unchanging schema structure directly at the engine layer
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        ingredients_found: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    name: {
-                                        type: Type.STRING
-                                    },
-                                    amount: {
-                                        type: Type.NUMBER,
-                                        description: 'The pure numerical value of the quantity. Use decimals if needed (e.g., 0.5, 1.5, 2).'
-                                    },
-                                    unit: {
-                                        type: Type.STRING,
-                                        description: 'The standard measurement unit like g, kg, pieces, tbsp, tsp, packet, cup, or ml.'
-                                    },
-                                    raw_display_text: {
-                                        type: Type.STRING,
-                                        description: 'The complete human-readable string combined (e.g., "500g", "2 tablespoons").'
-                                    }
-                                },
-                                required: ['name', 'amount', 'unit', 'raw_display_text']
-                            }
-                        }
-                    },
-                    required: ['ingredients_found']
-                },
-            },
-        });
-
-        return JSON.parse(response.text);
-    } catch (error) {
-        console.error('Detailed Scan Error:', error.message || error);
-        throw error;
-    }
-}
-
-
 import Recipe from './models/Recipe.js';
+import Job from './models/Job.js'; // Import your new database model
+import { GoogleGenAI, Type } from '@google/genai';
+import crypto from 'crypto';
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 /**
- * HIGH-SPEED DATABASE FEED ENGINE
- * Queries MongoDB, performs array matching, and generates delivery deep links.
+ * HIGH-SPEED MAIN ROUTE SEARCH ENGINE (Returns results or initializes DB job state entry)
  */
 export async function getPaginatedRecipeFeed(userIngredients, page = 1, cuisinePreference = 'Global') {
     try {
         const limit = 20;
         const skip = (page - 1) * limit;
-
-        // Convert all user ingredient names to lowercase for robust matching
         const userOwnedNames = userIngredients.map(item => item.name.toLowerCase().trim());
 
-        // 1. Build Database Query Matrix
         let query = {};
         if (cuisinePreference.toLowerCase() !== 'global') {
             query.cuisine_style = { $regex: new RegExp(cuisinePreference, 'i') };
         }
-
-        // Fetch recipes matching the cuisine filter
-        const totalCount = await Recipe.countDocuments(query);
         const databaseRecipes = await Recipe.find(query);
 
-        // 2. Mathematical Ingredient Cross-Examination
         const calculatedFeed = databaseRecipes.map(recipe => {
             const missingItems = [];
             let matchedCount = 0;
 
-            // Compare what the user owns vs what the database requires
             recipe.full_ingredients_list.forEach(reqItem => {
                 const cleanedName = reqItem.name.toLowerCase().trim();
                 if (userOwnedNames.includes(cleanedName)) {
                     matchedCount++;
                 } else {
-                    // Format structural display text for the frontend checklist
                     missingItems.push({
                         name: reqItem.name,
                         amount: reqItem.amount,
@@ -114,10 +38,8 @@ export async function getPaginatedRecipeFeed(userIngredients, page = 1, cuisineP
                 }
             });
 
-            // 3. Blinkit Deep-Linking Search Parameterization
-            // Generates universal search query strings to load inside web views or intent routers
             const blinkitSearchUrls = missingItems.map(item => {
-                const searchString = encodeURIComponent(`${item.name}`);
+                const searchString = encodeURIComponent(item.name);
                 return {
                     item_name: item.name,
                     blinkit_url: `https://blinkit.com{searchString}`,
@@ -136,22 +58,118 @@ export async function getPaginatedRecipeFeed(userIngredients, page = 1, cuisineP
             };
         });
 
-        // 4. Sort by best match percentage, then apply pagination slicing
-        const sortedFeed = calculatedFeed
+        const filteredFeed = calculatedFeed.filter(item => item.match_percentage > 0);
+
+        // IF 0 MATCHES -> CREATE PERSISTENT BACKGROUND JOB IN MONGO
+        if (filteredFeed.length === 0) {
+            const jobId = crypto.randomUUID();
+
+            // Save initial state entry inside Atlas collection
+            await Job.create({ _id: jobId, status: 'running', progress: 5, recipeIds: [] });
+
+            // Run background generator asynchronously without blocking response
+            startBackgroundGeneration(jobId, userIngredients, cuisinePreference);
+
+            return {
+                status: "processing",
+                job_id: jobId,
+                message: "Please wait while the AI Chef creates recipes for your unique ingredients!",
+                recipes: []
+            };
+        }
+
+        const sortedFeed = filteredFeed
             .sort((a, b) => b.match_percentage - a.match_percentage)
             .slice(skip, skip + limit);
 
         return {
+            status: "complete",
             current_page: page,
-            has_more_pages: skip + limit < totalCount,
-            total_available: totalCount,
+            has_more_pages: skip + limit < filteredFeed.length,
             recipes: sortedFeed
         };
 
     } catch (error) {
-        console.error('Database Engine Splicing Error:', error);
+        console.error('Engine Parsing Error:', error);
         throw error;
     }
 }
 
+/**
+ * BACKGROUND BATCH COMPILER ENGINE WITH DIRECT DB INTERACTION
+ */
+async function startBackgroundGeneration(jobId, userIngredients, cuisinePreference) {
+    const targetCount = 15;
+    const batchSize = 5;
+    const ingredientsListStr = userIngredients.map(i => `${i.amount} ${i.unit} ${i.name}`).join(', ');
+    let allGeneratedIds = [];
 
+    try {
+        for (let currentBatch = 0; currentBatch < targetCount; currentBatch += batchSize) {
+            const prompt = `
+        The user wants to cook but only has these core items: [${ingredientsListStr}].
+        Generate exactly ${batchSize} fresh, creative recipes matching the cuisine concept: "${cuisinePreference}".
+        Each recipe can include 1 to 4 extra missing items they need to order. Do not duplicate recipes within this run.
+        The 'search_tags' array must contain an array of the names of the core ingredients in lowercase.
+      `;
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: prompt,
+                config: {
+                    responseMimeType: 'application/json',
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            recipes: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        title: { type: Type.STRING },
+                                        cuisine_style: { type: Type.STRING },
+                                        brief_summary: { type: Type.STRING },
+                                        search_tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                        full_ingredients_list: {
+                                            type: Type.ARRAY,
+                                            items: {
+                                                type: Type.OBJECT,
+                                                properties: { name: { type: Type.STRING }, amount: { type: Type.NUMBER }, unit: { type: Type.STRING } },
+                                                required: ['name', 'amount', 'unit']
+                                            }
+                                        },
+                                        cooking_steps: { type: Type.ARRAY, items: { type: Type.STRING } }
+                                    },
+                                    required: ['title', 'cuisine_style', 'brief_summary', 'search_tags', 'full_ingredients_list', 'cooking_steps']
+                                }
+                            }
+                        },
+                        required: ['recipes']
+                    }
+                }
+            });
+
+            const parsedData = JSON.parse(response.text);
+
+            const savedDocs = await Recipe.insertMany(parsedData.recipes);
+            const batchIds = savedDocs.map(doc => doc._id);
+            allGeneratedIds = [...allGeneratedIds, ...batchIds];
+
+            const calculatedProgress = Math.round(((currentBatch + batchSize) / targetCount) * 100);
+
+            // Update persistent database document state incrementally
+            await Job.findByIdAndUpdate(jobId, {
+                progress: Math.min(calculatedProgress, 95),
+                recipeIds: allGeneratedIds
+            });
+        }
+
+        // Explicitly update status to completed when fully finished
+        await Job.findByIdAndUpdate(jobId, { status: 'completed', progress: 100 });
+        console.log(`Persistent Job Matrix [${jobId}] verified and logged successfully.`);
+
+    } catch (error) {
+        console.error(`Persistent Job Error [${jobId}]:`, error.message);
+        await Job.findByIdAndUpdate(jobId, { status: 'failed', progress: 0 });
+    }
+}

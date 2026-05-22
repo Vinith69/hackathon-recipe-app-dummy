@@ -10,6 +10,7 @@ import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import { getPaginatedRecipeFeed } from './recipeService.js';
 import Recipe from './models/Recipe.js';
+import Job from './models/Job.js';
 
 const app = express();
 const upload = multer({ dest: 'uploads/' }); // Temp folder for storage
@@ -129,5 +130,91 @@ app.get('/api/recipes/details/:id', async (req, res) => {
         return res.status(500).json({ error: 'Failed to parse document properties.' });
     }
 });
+
+
+
+/**
+ * DATABASE DRIVEN POLLING STATUS CONTROLLER
+ */
+app.post('/api/recipes/status/:jobId', async (req, res) => {
+    try {
+        // Look up tracking document from the database collection directly
+        const job = await Job.findById(req.params.jobId);
+
+        if (!job) {
+            return res.status(404).json({ error: "Job profile not found, missing, or expired." });
+        }
+
+        if (job.status === "failed") {
+            return res.json({ status: "failed", progress: 0, message: "AI Chef encountered an engine issue processing recipes." });
+        }
+
+        if (job.status === "running") {
+            return res.json({
+                status: "running",
+                progress: job.progress,
+                message: `AI Chef is mixing things up! ${job.progress}% complete...`
+            });
+        }
+
+        // Once completed, resolve documents straight from the recipe pool
+        if (job.status === "completed") {
+            const userIngredients = req.body.finalIngredients || [];
+            const userOwnedNames = userIngredients.map(item => item.name.toLowerCase().trim());
+
+            const freshlyCookedRecipes = await Recipe.find({ _id: { $in: job.recipeIds } });
+
+            const formattedResponse = freshlyCookedRecipes.map(recipe => {
+                const missingItems = [];
+                let matchedCount = 0;
+
+                recipe.full_ingredients_list.forEach(reqItem => {
+                    const cleanedName = reqItem.name.toLowerCase().trim();
+                    if (userOwnedNames.includes(cleanedName)) {
+                        matchedCount++;
+                    } else {
+                        missingItems.push({
+                            name: reqItem.name,
+                            amount: reqItem.amount,
+                            unit: reqItem.unit,
+                            display_text: `${reqItem.amount} ${reqItem.unit} ${reqItem.name}`
+                        });
+                    }
+                });
+
+                const delivery_links = missingItems.map(item => {
+                    const searchString = encodeURIComponent(item.name);
+                    return {
+                        item_name: item.name,
+                        blinkit_url: `https://blinkit.com{searchString}`,
+                        swiggy_url: `https://swiggy.com{searchString}`
+                    };
+                });
+
+                return {
+                    id: recipe._id,
+                    title: recipe.title,
+                    cuisine_style: recipe.cuisine_style,
+                    brief_summary: recipe.brief_summary,
+                    missing_ingredients_to_order: missingItems,
+                    delivery_links: delivery_links,
+                    match_percentage: recipe.full_ingredients_list.length > 0 ? Math.round((matchedCount / recipe.full_ingredients_list.length) * 100) : 0
+                };
+            });
+
+            return res.json({
+                status: "completed",
+                progress: 100,
+                message: "Your custom menu is fully prepped!",
+                recipes: formattedResponse
+            });
+        }
+
+    } catch (error) {
+        console.error("Polling Endpoint Crash Matrix:", error);
+        return res.status(500).json({ error: "Failed to read data properties from persistent database collection." });
+    }
+});
+
 
 app.listen(3000, () => console.log('Recipe backend running on port 3000'));
