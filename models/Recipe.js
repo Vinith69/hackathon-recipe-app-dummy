@@ -13,7 +13,14 @@ const RecipeSchema = new mongoose.Schema({
             unit: { type: String, required: true }
         }
     ],
-    cooking_steps: [{ type: String, required: true }]
+    cooking_steps: [
+        {
+            step_number: { type: Number, required: true },
+            instruction: { type: String, required: true },
+            duration_min: { type: Number, default: 0 },  // "3 min" shown in UI
+            tip: { type: String, default: '' }   // yellow tip box in UI
+        }
+    ]
 });
 
 export default mongoose.model('Recipe', RecipeSchema);

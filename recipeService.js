@@ -2,6 +2,7 @@ import Recipe from './models/Recipe.js';
 import Job from './models/Job.js'; // Import your new database model
 import { GoogleGenAI, Type } from '@google/genai';
 import crypto from 'crypto';
+import { fuzzyMatch } from './utils/matcher.js';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -21,22 +22,24 @@ export async function getPaginatedRecipeFeed(userIngredients, page = 1, cuisineP
         const databaseRecipes = await Recipe.find(query);
 
         const calculatedFeed = databaseRecipes.map(recipe => {
-            const missingItems = [];
-            let matchedCount = 0;
+            // const missingItems = [];
+            // let matchedCount = 0;
 
-            recipe.full_ingredients_list.forEach(reqItem => {
-                const cleanedName = reqItem.name.toLowerCase().trim();
-                if (userOwnedNames.includes(cleanedName)) {
-                    matchedCount++;
-                } else {
-                    missingItems.push({
-                        name: reqItem.name,
-                        amount: reqItem.amount,
-                        unit: reqItem.unit,
-                        display_text: `${reqItem.amount} ${reqItem.unit} ${reqItem.name}`
-                    });
-                }
-            });
+            // recipe.full_ingredients_list.forEach(reqItem => {
+            //     const cleanedName = reqItem.name.toLowerCase().trim();
+            //     if (userOwnedNames.includes(cleanedName)) {
+            //         matchedCount++;
+            //     } else {
+            //         missingItems.push({
+            //             name: reqItem.name,
+            //             amount: reqItem.amount,
+            //             unit: reqItem.unit,
+            //             display_text: `${reqItem.amount} ${reqItem.unit} ${reqItem.name}`
+            //         });
+            //     }
+            // });
+
+            const { matchedCount, missingItems } = fuzzyMatch(userIngredients, recipe.full_ingredients_list);
 
             const blinkitSearchUrls = missingItems.map(item => {
                 // Encodes spaces and special characters cleanly (e.g. "boneless chicken" -> "boneless%20chicken")
@@ -148,7 +151,19 @@ async function startBackgroundGeneration(jobId, userIngredients, cuisinePreferen
                                                 required: ['name', 'amount', 'unit']
                                             }
                                         },
-                                        cooking_steps: { type: Type.ARRAY, items: { type: Type.STRING } }
+                                        cooking_steps: {
+                                            type: Type.ARRAY,
+                                            items: {
+                                                type: Type.OBJECT,
+                                                properties: {
+                                                    step_number: { type: Type.NUMBER },
+                                                    instruction: { type: Type.STRING },
+                                                    duration_min: { type: Type.NUMBER, description: 'Estimated minutes for this step. 0 if instant.' },
+                                                    tip: { type: Type.STRING, description: 'Optional helpful tip for this step. Empty string if none.' }
+                                                },
+                                                required: ['step_number', 'instruction', 'duration_min', 'tip']
+                                            }
+                                        }
                                     },
                                     required: ['title', 'cuisine_style', 'brief_summary', 'search_tags', 'full_ingredients_list', 'cooking_steps']
                                 }

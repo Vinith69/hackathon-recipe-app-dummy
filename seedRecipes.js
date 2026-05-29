@@ -62,7 +62,19 @@ async function seedDatabase() {
                                             required: ['name', 'amount', 'unit']
                                         }
                                     },
-                                    cooking_steps: { type: Type.ARRAY, items: { type: Type.STRING } }
+                                    cooking_steps: {
+                                        type: Type.ARRAY,
+                                        items: {
+                                            type: Type.OBJECT,
+                                            properties: {
+                                                step_number: { type: Type.NUMBER },
+                                                instruction: { type: Type.STRING },
+                                                duration_min: { type: Type.NUMBER, description: 'Estimated minutes for this step. 0 if instant.' },
+                                                tip: { type: Type.STRING, description: 'Optional helpful tip for this step. Empty string if none.' }
+                                            },
+                                            required: ['step_number', 'instruction', 'duration_min', 'tip']
+                                        }
+                                    }
                                 },
                                 required: ['title', 'cuisine_style', 'brief_summary', 'search_tags', 'full_ingredients_list', 'cooking_steps']
                             }
